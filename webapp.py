@@ -1,8 +1,18 @@
 """Flask web application for the honeypot management backend (port 8080)."""
 
+import ipaddress
 from flask import Flask, render_template, request, redirect, url_for, jsonify, Response
 import database as db
 from honeypot_services import SERVICE_DEFINITIONS
+
+
+def _is_valid_ip(value):
+    """Return True if value is a valid IPv4 or IPv6 address."""
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
 
 app = Flask(__name__)
 
@@ -70,7 +80,7 @@ def add_ip():
     ip = request.form.get("ip_address", "").strip()
     list_type = request.form.get("list_type", "blacklist")
     reason = request.form.get("reason", "").strip() or "Manually added"
-    if ip:
+    if ip and _is_valid_ip(ip):
         db.add_ip(ip, list_type, reason=reason)
     return redirect(url_for(list_type))
 
