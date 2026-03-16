@@ -239,6 +239,32 @@ def set_setting(key, value):
     db.commit()
 
 
+def get_ip_services(ip):
+    """Get the distinct services an IP was seen on, with connection counts."""
+    db = get_db()
+    return db.execute(
+        """SELECT service, dest_port, COUNT(*) as cnt
+           FROM connection_logs WHERE source_ip = ?
+           GROUP BY service, dest_port ORDER BY cnt DESC""",
+        (ip,),
+    ).fetchall()
+
+
+def get_ips_with_services(list_type):
+    """Get IPs with their associated service/port breakdown."""
+    ips = get_ips(list_type)
+    result = []
+    for ip_row in ips:
+        ip_dict = dict(ip_row)
+        services = get_ip_services(ip_dict["ip_address"])
+        ip_dict["services"] = [
+            {"service": s["service"], "port": s["dest_port"], "count": s["cnt"]}
+            for s in services
+        ]
+        result.append(ip_dict)
+    return result
+
+
 def get_published_list():
     """Get the list of IPs to publish in list.txt."""
     db = get_db()
