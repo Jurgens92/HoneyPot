@@ -78,6 +78,7 @@
         <nav>
             <a href="{{ url_for('dashboard') }}" class="{% if request.endpoint == 'dashboard' %}active{% endif %}">Dashboard</a>
             <a href="{{ url_for('logs') }}" class="{% if request.endpoint == 'logs' %}active{% endif %}">Connection Logs</a>
+            <a href="{{ url_for('services') }}" class="{% if request.endpoint == 'services' %}active{% endif %}">Services</a>
             <a href="{{ url_for('blacklist') }}" class="{% if request.endpoint == 'blacklist' %}active{% endif %}">Blacklist</a>
             <a href="{{ url_for('whitelist') }}" class="{% if request.endpoint == 'whitelist' %}active{% endif %}">Whitelist</a>
             <a href="/list.txt" target="_blank">Published List</a>
