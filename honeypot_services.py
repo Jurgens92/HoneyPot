@@ -7,13 +7,18 @@ import logging
 import os
 import time
 
+import paramiko
+
 from database import log_connection, get_db, close_db
 
 logger = logging.getLogger("honeypot")
 
-# Banner strings for realistic-looking services
-SSH_BANNER = b"SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6\r\n"
-TELNET_BANNER = b"\xff\xfd\x18\xff\xfd\x20\xff\xfd\x23\xff\xfd\x27\r\nUbuntu 22.04.3 LTS\r\nlogin: "
+# SSH host key (generated at startup if missing)
+SSH_HOST_KEY_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "certs", "ssh_host_rsa_key"
+)
+
+TELNET_BANNER = b"\r\nUbuntu 22.04.3 LTS\r\n"
 SMTP_BANNER = b"220 mail.example.com ESMTP Postfix (Ubuntu)\r\n"
 MYSQL_GREETING = (
     b"\x4a\x00\x00\x00\x0a"
@@ -234,64 +239,155 @@ class HoneypotService(threading.Thread):
 # Individual service handlers
 # ---------------------------------------------------------------------------
 
+def _ensure_ssh_host_key():
+    """Generate an RSA host key for the fake SSH server if it doesn't exist."""
+    os.makedirs(os.path.dirname(SSH_HOST_KEY_FILE), exist_ok=True)
+    if os.path.exists(SSH_HOST_KEY_FILE):
+        return paramiko.RSAKey(filename=SSH_HOST_KEY_FILE)
+    key = paramiko.RSAKey.generate(2048)
+    key.write_private_key_file(SSH_HOST_KEY_FILE)
+    logger.info("Generated SSH host key for honeypot")
+    return key
+
+
+class _HoneypotSSHServer(paramiko.ServerInterface):
+    """Paramiko server interface that accepts any credentials and logs them."""
+
+    def __init__(self, addr, service_name, port):
+        self.addr = addr
+        self.service_name = service_name
+        self.port = port
+        self.event = threading.Event()
+
+    def check_channel_request(self, kind, chanid):
+        if kind == "session":
+            return paramiko.OPEN_SUCCEEDED
+        return paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
+
+    def check_auth_password(self, username, password):
+        log_connection(self.addr[0], self.addr[1], self.service_name, self.port,
+                       username=username, password=password,
+                       details="SSH password auth")
+        # Always deny so the attacker keeps trying
+        return paramiko.AUTH_FAILED
+
+    def check_auth_publickey(self, username, key):
+        log_connection(self.addr[0], self.addr[1], self.service_name, self.port,
+                       username=username,
+                       details=f"SSH pubkey auth ({key.get_name()})")
+        return paramiko.AUTH_FAILED
+
+    def get_allowed_auths(self, username):
+        return "password,publickey"
+
+    def check_channel_shell_request(self, channel):
+        self.event.set()
+        return True
+
+    def check_channel_pty_request(self, channel, term, width, height,
+                                  pixelwidth, pixelheight, modes):
+        return True
+
+
 def handle_ssh(client, addr, service_name, port):
-    """Fake SSH server - captures authentication attempts."""
-    client.settimeout(30)
-    client.sendall(SSH_BANNER)
+    """Fake SSH server using paramiko - lets attackers attempt real logins."""
+    host_key = _ensure_ssh_host_key()
+    transport = paramiko.Transport(client)
+    transport.add_server_key(host_key)
+    transport.local_version = "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6"
 
+    server = _HoneypotSSHServer(addr, service_name, port)
     try:
-        data = client.recv(4096)
-        details = data.decode("utf-8", errors="replace").strip()
+        transport.start_server(server=server)
+    except (paramiko.SSHException, EOFError, ConnectionResetError) as e:
         log_connection(addr[0], addr[1], service_name, port,
-                       details=f"Client banner: {details}")
-    except socket.timeout:
-        log_connection(addr[0], addr[1], service_name, port,
-                       details="Connection (no data)")
+                       details=f"SSH handshake failed: {e}")
+        return
 
-    # Keep the connection open briefly to capture more attempts
-    for _ in range(3):
-        try:
-            data = client.recv(4096)
-            if not data:
-                break
-            log_connection(addr[0], addr[1], service_name, port,
-                           details=data.decode("utf-8", errors="replace").strip()[:500])
-        except (socket.timeout, ConnectionResetError):
+    # Keep the transport open to allow multiple auth attempts (up to 60s)
+    for _ in range(60):
+        if not transport.is_active():
             break
+        time.sleep(1)
+
+    transport.close()
+
+
+def _telnet_read_line(client, echo=True):
+    """Read a line from a telnet client, byte by byte, with optional echo."""
+    buf = b""
+    while True:
+        byte = client.recv(1)
+        if not byte:
+            return None
+        # Ignore telnet IAC negotiation sequences
+        if byte == b"\xff":
+            client.recv(2)
+            continue
+        if byte in (b"\r", b"\n"):
+            if echo:
+                client.sendall(b"\r\n")
+            # Consume trailing \n after \r if present
+            if byte == b"\r":
+                client.settimeout(0.5)
+                try:
+                    peek = client.recv(1)
+                    if peek and peek != b"\n":
+                        buf += peek
+                except socket.timeout:
+                    pass
+                finally:
+                    client.settimeout(30)
+            return buf.decode("utf-8", errors="replace")
+        if byte == b"\x7f" or byte == b"\x08":  # backspace/delete
+            if buf:
+                buf = buf[:-1]
+                if echo:
+                    client.sendall(b"\x08 \x08")
+            continue
+        buf += byte
+        if echo:
+            client.sendall(byte)
 
 
 def handle_telnet(client, addr, service_name, port):
-    """Fake Telnet server - captures login attempts."""
+    """Fake Telnet server - captures login attempts with interactive prompts."""
     client.settimeout(30)
+    # Send telnet negotiation (suppress go-ahead, echo) then banner
+    client.sendall(
+        b"\xff\xfb\x01"  # WILL ECHO
+        b"\xff\xfb\x03"  # WILL SUPPRESS-GO-AHEAD
+        b"\xff\xfd\x18"  # DO TERMINAL-TYPE
+        b"\xff\xfd\x1f"  # DO NAWS
+    )
     client.sendall(TELNET_BANNER)
 
-    username = None
-    try:
-        data = client.recv(1024)
-        username = data.decode("utf-8", errors="replace").strip()
-        client.sendall(b"Password: ")
-        data = client.recv(1024)
-        password = data.decode("utf-8", errors="replace").strip()
-        log_connection(addr[0], addr[1], service_name, port,
-                       username=username, password=password,
-                       details="Login attempt")
-        client.sendall(b"\r\nLogin incorrect\r\n")
-        time.sleep(1)
-        client.sendall(b"login: ")
-        # Capture one more attempt
-        data = client.recv(1024)
-        if data:
-            username = data.decode("utf-8", errors="replace").strip()
+    # Allow up to 3 login attempts
+    for attempt in range(3):
+        try:
+            client.sendall(b"login: ")
+            username = _telnet_read_line(client, echo=True)
+            if username is None:
+                break
+
             client.sendall(b"Password: ")
-            data = client.recv(1024)
-            password = data.decode("utf-8", errors="replace").strip() if data else ""
+            password = _telnet_read_line(client, echo=False)
+            client.sendall(b"\r\n")
+            if password is None:
+                break
+
             log_connection(addr[0], addr[1], service_name, port,
                            username=username, password=password,
-                           details="Login attempt (retry)")
+                           details=f"Login attempt #{attempt + 1}")
+
+            time.sleep(1.5)
             client.sendall(b"\r\nLogin incorrect\r\n")
-    except socket.timeout:
-        log_connection(addr[0], addr[1], service_name, port,
-                       details=f"Telnet connection (username={username})")
+        except socket.timeout:
+            log_connection(addr[0], addr[1], service_name, port,
+                           details=f"Telnet timeout at attempt #{attempt + 1}")
+            break
+        except (ConnectionResetError, BrokenPipeError, OSError):
+            break
 
 
 def handle_http(client, addr, service_name, port):
@@ -466,6 +562,7 @@ SERVICE_DEFINITIONS = [
 def start_all_services():
     """Start all honeypot services and return the list of threads."""
     _ensure_self_signed_cert()
+    _ensure_ssh_host_key()
     services = []
     for port, name, handler in SERVICE_DEFINITIONS:
         svc = HoneypotService(port, name, handler)
