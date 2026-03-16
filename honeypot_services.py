@@ -9,7 +9,7 @@ import time
 
 import paramiko
 
-from database import log_connection, get_db, close_db
+from database import log_connection, close_db
 
 logger = logging.getLogger("honeypot")
 
@@ -167,12 +167,13 @@ def _ensure_self_signed_cert():
 def _parse_http_post(data):
     """Extract username and password from an HTTP POST body."""
     try:
+        from urllib.parse import unquote_plus
         body = data.split(b"\r\n\r\n", 1)[-1].decode("utf-8", errors="replace")
         params = {}
         for pair in body.split("&"):
             if "=" in pair:
                 k, v = pair.split("=", 1)
-                params[k] = v.replace("+", " ").strip()
+                params[k] = unquote_plus(v).strip()
         return params.get("username"), params.get("password")
     except Exception:
         return None, None
@@ -239,15 +240,28 @@ class HoneypotService(threading.Thread):
 # Individual service handlers
 # ---------------------------------------------------------------------------
 
+_cached_ssh_host_key = None
+_ssh_key_lock = threading.Lock()
+
+
 def _ensure_ssh_host_key():
-    """Generate an RSA host key for the fake SSH server if it doesn't exist."""
-    os.makedirs(os.path.dirname(SSH_HOST_KEY_FILE), exist_ok=True)
-    if os.path.exists(SSH_HOST_KEY_FILE):
-        return paramiko.RSAKey(filename=SSH_HOST_KEY_FILE)
-    key = paramiko.RSAKey.generate(2048)
-    key.write_private_key_file(SSH_HOST_KEY_FILE)
-    logger.info("Generated SSH host key for honeypot")
-    return key
+    """Generate an RSA host key for the fake SSH server if it doesn't exist.
+    Caches the key in memory to avoid re-reading from disk on every connection."""
+    global _cached_ssh_host_key
+    if _cached_ssh_host_key is not None:
+        return _cached_ssh_host_key
+
+    with _ssh_key_lock:
+        if _cached_ssh_host_key is not None:
+            return _cached_ssh_host_key
+        os.makedirs(os.path.dirname(SSH_HOST_KEY_FILE), exist_ok=True)
+        if os.path.exists(SSH_HOST_KEY_FILE):
+            _cached_ssh_host_key = paramiko.RSAKey(filename=SSH_HOST_KEY_FILE)
+        else:
+            _cached_ssh_host_key = paramiko.RSAKey.generate(2048)
+            _cached_ssh_host_key.write_private_key_file(SSH_HOST_KEY_FILE)
+            logger.info("Generated SSH host key for honeypot")
+        return _cached_ssh_host_key
 
 
 class _HoneypotSSHServer(paramiko.ServerInterface):
@@ -313,10 +327,10 @@ def handle_ssh(client, addr, service_name, port):
     transport.close()
 
 
-def _telnet_read_line(client, echo=True):
+def _telnet_read_line(client, echo=True, max_length=4096):
     """Read a line from a telnet client, byte by byte, with optional echo."""
     buf = b""
-    while True:
+    while len(buf) < max_length:
         byte = client.recv(1)
         if not byte:
             return None

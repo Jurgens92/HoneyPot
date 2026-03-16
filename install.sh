@@ -55,7 +55,22 @@ if systemctl is-active --quiet ssh || systemctl is-active --quiet sshd; then
     SSH_CONFIG="/etc/ssh/sshd_config"
     SSHD_OVERRIDE="/etc/ssh/sshd_config.d/honeypot-move-port.conf"
 
-    # Use a drop-in override (cleaner than editing main config)
+    # Comment out any existing Port directive in the main config so that
+    # the drop-in is the only source of truth.  Without this, sshd may
+    # listen on BOTH the old port and 2222.
+    if grep -qE '^\s*Port\s+' "$SSH_CONFIG" 2>/dev/null; then
+        sed -i 's/^\s*Port\s\+/#&/' "$SSH_CONFIG"
+        info "Commented out existing Port directive in $SSH_CONFIG"
+    fi
+
+    # Ensure the main config includes the drop-in directory.
+    # Ubuntu 24.04 ships with this by default, but verify it.
+    if ! grep -qE '^\s*Include\s+/etc/ssh/sshd_config\.d/\*' "$SSH_CONFIG" 2>/dev/null; then
+        sed -i '1s;^;Include /etc/ssh/sshd_config.d/*.conf\n;' "$SSH_CONFIG"
+        info "Added Include directive for sshd_config.d to $SSH_CONFIG"
+    fi
+
+    # Create the drop-in override
     mkdir -p /etc/ssh/sshd_config.d
     echo "Port 2222" > "$SSHD_OVERRIDE"
     info "Created $SSHD_OVERRIDE with Port 2222"
@@ -63,10 +78,16 @@ if systemctl is-active --quiet ssh || systemctl is-active --quiet sshd; then
     # Restart SSH on the new port
     if systemctl is-active --quiet ssh; then
         systemctl restart ssh
-        info "SSH daemon restarted on port 2222"
     elif systemctl is-active --quiet sshd; then
         systemctl restart sshd
-        info "SSHD daemon restarted on port 2222"
+    fi
+
+    # Verify SSH is now listening on 2222
+    sleep 1
+    if ss -tlnp 2>/dev/null | grep -q ':2222\b'; then
+        info "SSH daemon confirmed listening on port 2222"
+    else
+        warn "SSH may not have moved to port 2222 - please verify manually"
     fi
 
     echo ""

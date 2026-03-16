@@ -3,7 +3,7 @@
 import sqlite3
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "honeypot.db")
 
@@ -86,7 +86,7 @@ def log_connection(source_ip, source_port, service, dest_port, details=None,
         """INSERT INTO connection_logs
            (timestamp, source_ip, source_port, service, dest_port, details, username, password)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (datetime.utcnow().isoformat(), source_ip, source_port, service,
+        (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"), source_ip, source_port, service,
          dest_port, details, username, password),
     )
     db.commit()
@@ -127,7 +127,7 @@ def add_ip(ip, list_type, reason=None, auto_added=False):
         db.execute(
             """INSERT INTO ip_list (ip_address, list_type, added_at, reason, auto_added)
                VALUES (?, ?, ?, ?, ?)""",
-            (ip, list_type, datetime.utcnow().isoformat(), reason, int(auto_added)),
+            (ip, list_type, datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"), reason, int(auto_added)),
         )
         db.commit()
         return True
