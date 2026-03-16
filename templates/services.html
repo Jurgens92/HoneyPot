@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Services - HoneyPot{% endblock %}
+{% block content %}
+<h2>Honeypot Services</h2>
+
+<table>
+    <thead>
+        <tr>
+            <th>Status</th>
+            <th>Service</th>
+            <th>Port</th>
+            <th>Total Connections</th>
+            <th>Unique IPs</th>
+            <th>Last Activity</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for svc in services %}
+        <tr>
+            <td><span class="tag tag-white">Active</span></td>
+            <td><strong>{{ svc.name }}</strong></td>
+            <td class="mono">{{ svc.port }}</td>
+            <td>{{ svc.connections }}</td>
+            <td>{{ svc.unique_ips }}</td>
+            <td class="mono">{{ svc.last_seen }}</td>
+            <td><a href="{{ url_for('logs', service=svc.name) }}">View logs</a></td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

@@ -2,6 +2,7 @@
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify, Response
 import database as db
+from honeypot_services import SERVICE_DEFINITIONS
 
 app = Flask(__name__)
 
@@ -54,13 +55,13 @@ def logs():
 
 @app.route("/blacklist")
 def blacklist():
-    ips = db.get_ips("blacklist")
+    ips = db.get_ips_with_services("blacklist")
     return render_template("ip_list.html", ips=ips, list_type="blacklist")
 
 
 @app.route("/whitelist")
 def whitelist():
-    ips = db.get_ips("whitelist")
+    ips = db.get_ips_with_services("whitelist")
     return render_template("ip_list.html", ips=ips, list_type="whitelist")
 
 
@@ -90,6 +91,36 @@ def move_ip():
     if ip:
         db.move_ip(ip, new_list)
     return redirect(url_for(new_list))
+
+
+# ---------------------------------------------------------------------------
+# Services overview
+# ---------------------------------------------------------------------------
+
+@app.route("/services")
+def services():
+    svc_list = []
+    for port, name, _handler in SERVICE_DEFINITIONS:
+        count = db.get_db().execute(
+            "SELECT COUNT(*) as cnt FROM connection_logs WHERE service = ? AND dest_port = ?",
+            (name, port),
+        ).fetchone()["cnt"]
+        unique = db.get_db().execute(
+            "SELECT COUNT(DISTINCT source_ip) as cnt FROM connection_logs WHERE service = ? AND dest_port = ?",
+            (name, port),
+        ).fetchone()["cnt"]
+        last_row = db.get_db().execute(
+            "SELECT timestamp FROM connection_logs WHERE service = ? AND dest_port = ? ORDER BY timestamp DESC LIMIT 1",
+            (name, port),
+        ).fetchone()
+        svc_list.append({
+            "name": name,
+            "port": port,
+            "connections": count,
+            "unique_ips": unique,
+            "last_seen": last_row["timestamp"][:19] if last_row else "Never",
+        })
+    return render_template("services.html", services=svc_list)
 
 
 # ---------------------------------------------------------------------------
