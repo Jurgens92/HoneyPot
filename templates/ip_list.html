@@ -17,6 +17,7 @@
     <thead>
         <tr>
             <th>IP Address</th>
+            <th>Services Targeted</th>
             <th>Added</th>
             <th>Reason</th>
             <th>Source</th>
@@ -27,6 +28,17 @@
         {% for ip in ips %}
         <tr>
             <td class="mono">{{ ip.ip_address }}</td>
+            <td>
+                {% if ip.services %}
+                    {% for svc in ip.services %}
+                    <span class="tag tag-blue" style="background:#0f3460;color:#4fc3f7;margin:1px 2px;">
+                        {{ svc.service }}:{{ svc.port }} ({{ svc.count }})
+                    </span>
+                    {% endfor %}
+                {% else %}
+                <span style="color:#666;">No logs</span>
+                {% endif %}
+            </td>
             <td class="mono">{{ ip.added_at[:19] }}</td>
             <td>{{ ip.reason or '' }}</td>
             <td>
@@ -59,7 +71,7 @@
         </tr>
         {% endfor %}
         {% if not ips %}
-        <tr><td colspan="5" style="color:#666;">No IPs in the {{ list_type }} yet.</td></tr>
+        <tr><td colspan="6" style="color:#666;">No IPs in the {{ list_type }} yet.</td></tr>
         {% endif %}
     </tbody>
 </table>
