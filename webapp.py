@@ -1,4 +1,4 @@
-"""Flask web application for the honeypot management backend (port 8080)."""
+"""Flask web application for the honeypot management backend (HTTPS port 8080)."""
 
 import ipaddress
 from flask import Flask, render_template, request, redirect, url_for, jsonify, Response
