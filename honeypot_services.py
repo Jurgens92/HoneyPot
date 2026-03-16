@@ -122,13 +122,40 @@ def _ensure_self_signed_cert():
     if os.path.exists(CERT_FILE) and os.path.exists(KEY_FILE):
         return
     os.makedirs(CERT_DIR, exist_ok=True)
-    import subprocess
-    subprocess.run([
-        "openssl", "req", "-x509", "-newkey", "rsa:2048",
-        "-keyout", KEY_FILE, "-out", CERT_FILE,
-        "-days", "3650", "-nodes",
-        "-subj", "/CN=portal.example.com/O=Example Corp/C=US",
-    ], check=True, capture_output=True)
+
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from datetime import datetime, timedelta, timezone
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+    subject = issuer = x509.Name([
+        x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Example Corp"),
+        x509.NameAttribute(NameOID.COMMON_NAME, "portal.example.com"),
+    ])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.now(timezone.utc))
+        .not_valid_after(datetime.now(timezone.utc) + timedelta(days=3650))
+        .sign(key, hashes.SHA256())
+    )
+
+    with open(KEY_FILE, "wb") as f:
+        f.write(key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        ))
+    with open(CERT_FILE, "wb") as f:
+        f.write(cert.public_bytes(serialization.Encoding.PEM))
+
     logger.info("Generated self-signed certificate for HTTPS honeypot")
 
 
