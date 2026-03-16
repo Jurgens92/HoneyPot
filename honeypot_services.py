@@ -1,5 +1,6 @@
 """Fake honeypot services that listen on various ports and log connection attempts."""
 
+import collections
 import socket
 import ssl
 import struct
@@ -10,9 +11,90 @@ import time
 
 import paramiko
 
-from database import log_connection, close_db
+from database import log_connection, close_db, get_db
 
 logger = logging.getLogger("honeypot")
+
+
+# ---------------------------------------------------------------------------
+# DDoS protection: per-IP rate limiting and connection tracking
+# ---------------------------------------------------------------------------
+
+# Maximum concurrent connections a single IP can hold to one service
+MAX_CONNECTIONS_PER_IP = 5
+# Maximum concurrent connections per service (all IPs combined)
+MAX_CONNECTIONS_PER_SERVICE = 100
+# Rate limit: max new connections per IP per window
+RATE_LIMIT_WINDOW = 60          # seconds
+RATE_LIMIT_MAX_CONNECTIONS = 20  # per IP per window
+
+
+class ConnectionTracker:
+    """Track per-IP connection counts and enforce rate limits."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        # {(ip, port): count} – currently active connections
+        self._active: dict[tuple[str, int], int] = collections.defaultdict(int)
+        # {(ip, port): [timestamps]} – recent connection timestamps
+        self._timestamps: dict[tuple[str, int], list[float]] = collections.defaultdict(list)
+        # {port: count} – total active connections per service port
+        self._service_total: dict[int, int] = collections.defaultdict(int)
+
+    def try_acquire(self, ip: str, port: int) -> str | None:
+        """Try to accept a new connection.  Returns None on success or a
+        rejection reason string."""
+        now = time.monotonic()
+        key = (ip, port)
+
+        with self._lock:
+            # 1. Global per-service cap
+            if self._service_total[port] >= MAX_CONNECTIONS_PER_SERVICE:
+                return "service_full"
+
+            # 2. Per-IP concurrent cap
+            if self._active[key] >= MAX_CONNECTIONS_PER_IP:
+                return "per_ip_limit"
+
+            # 3. Per-IP rate limit (sliding window)
+            ts_list = self._timestamps[key]
+            cutoff = now - RATE_LIMIT_WINDOW
+            # Prune old entries
+            self._timestamps[key] = ts_list = [t for t in ts_list if t > cutoff]
+            if len(ts_list) >= RATE_LIMIT_MAX_CONNECTIONS:
+                return "rate_limited"
+
+            # Accept
+            self._active[key] += 1
+            self._service_total[port] += 1
+            ts_list.append(now)
+            return None
+
+    def release(self, ip: str, port: int):
+        """Release a connection slot."""
+        key = (ip, port)
+        with self._lock:
+            if self._active[key] > 0:
+                self._active[key] -= 1
+            if self._service_total[port] > 0:
+                self._service_total[port] -= 1
+
+
+# Single global tracker shared by all services
+_tracker = ConnectionTracker()
+
+
+def _is_blacklisted(ip: str) -> bool:
+    """Check whether *ip* is on the blacklist."""
+    try:
+        db = get_db()
+        row = db.execute(
+            "SELECT id FROM ip_list WHERE ip_address = ? AND list_type = 'blacklist'",
+            (ip,),
+        ).fetchone()
+        return row is not None
+    except Exception:
+        return False
 
 # SSH host key (generated at startup if missing)
 SSH_HOST_KEY_FILE = os.path.join(
@@ -437,6 +519,26 @@ class HoneypotService(threading.Thread):
         while not self._stop_event.is_set():
             try:
                 client, addr = server.accept()
+
+                # --- DDoS protection checks ---
+                ip = addr[0]
+
+                # 1. Blacklist enforcement
+                if _is_blacklisted(ip):
+                    logger.debug("Rejected blacklisted IP %s on %s",
+                                 ip, self.service_name)
+                    client.close()
+                    continue
+
+                # 2. Rate / concurrency limits
+                reject_reason = _tracker.try_acquire(ip, self.port)
+                if reject_reason:
+                    logger.debug("Rejected %s on %s:%d (%s)",
+                                 ip, self.service_name, self.port,
+                                 reject_reason)
+                    client.close()
+                    continue
+
                 t = threading.Thread(target=self._safe_handle,
                                      args=(client, addr), daemon=True)
                 t.start()
@@ -453,6 +555,7 @@ class HoneypotService(threading.Thread):
             logger.debug("Error handling %s connection from %s: %s",
                          self.service_name, addr, e)
         finally:
+            _tracker.release(addr[0], self.port)
             try:
                 client.close()
             except Exception:
@@ -545,8 +648,8 @@ def handle_ssh(client, addr, service_name, port):
                        details=f"SSH handshake failed: {e}")
         return
 
-    # Keep the transport open to allow multiple auth attempts (up to 60s)
-    for _ in range(60):
+    # Keep the transport open to allow multiple auth attempts (up to 15s)
+    for _ in range(15):
         if not transport.is_active():
             break
         time.sleep(1)
