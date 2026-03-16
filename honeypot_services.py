@@ -59,8 +59,9 @@ class ConnectionTracker:
             # 3. Per-IP rate limit (sliding window)
             ts_list = self._timestamps[key]
             cutoff = now - RATE_LIMIT_WINDOW
-            # Prune old entries
-            self._timestamps[key] = ts_list = [t for t in ts_list if t > cutoff]
+            # Prune old entries only when needed
+            if ts_list and ts_list[0] <= cutoff:
+                self._timestamps[key] = ts_list = [t for t in ts_list if t > cutoff]
             if len(ts_list) >= RATE_LIMIT_MAX_CONNECTIONS:
                 return "rate_limited"
 
@@ -78,23 +79,59 @@ class ConnectionTracker:
                 self._active[key] -= 1
             if self._service_total[port] > 0:
                 self._service_total[port] -= 1
+            # Clean up zero-count entries to prevent unbounded dict growth
+            if self._active[key] == 0:
+                del self._active[key]
+                # Prune old timestamps while we're at it
+                cutoff = time.monotonic() - RATE_LIMIT_WINDOW
+                ts_list = self._timestamps.get(key)
+                if ts_list is not None:
+                    pruned = [t for t in ts_list if t > cutoff]
+                    if pruned:
+                        self._timestamps[key] = pruned
+                    else:
+                        del self._timestamps[key]
 
 
 # Single global tracker shared by all services
 _tracker = ConnectionTracker()
 
 
+_blacklist_cache: set[str] = set()
+_blacklist_cache_lock = threading.Lock()
+_blacklist_cache_ts: float = 0
+_BLACKLIST_CACHE_TTL = 10  # seconds
+
+
+def _refresh_blacklist_cache() -> None:
+    """Reload the blacklist set from the database (called at most every TTL seconds)."""
+    global _blacklist_cache, _blacklist_cache_ts
+    now = time.monotonic()
+    if now - _blacklist_cache_ts < _BLACKLIST_CACHE_TTL:
+        return
+    with _blacklist_cache_lock:
+        if now - _blacklist_cache_ts < _BLACKLIST_CACHE_TTL:
+            return
+        try:
+            db = get_db()
+            rows = db.execute(
+                "SELECT ip_address FROM ip_list WHERE list_type = 'blacklist'"
+            ).fetchall()
+            _blacklist_cache = {r[0] for r in rows}
+            _blacklist_cache_ts = now
+        except Exception:
+            pass
+
+
 def _is_blacklisted(ip: str) -> bool:
-    """Check whether *ip* is on the blacklist."""
-    try:
-        db = get_db()
-        row = db.execute(
-            "SELECT id FROM ip_list WHERE ip_address = ? AND list_type = 'blacklist'",
-            (ip,),
-        ).fetchone()
-        return row is not None
-    except Exception:
-        return False
+    """Check whether *ip* is on the blacklist (uses in-memory cache)."""
+    _refresh_blacklist_cache()
+    return ip in _blacklist_cache
+
+
+def _add_to_blacklist_cache(ip: str) -> None:
+    """Add an IP to the in-memory blacklist cache immediately."""
+    _blacklist_cache.add(ip)
 
 # SSH host key (generated at startup if missing)
 SSH_HOST_KEY_FILE = os.path.join(
@@ -203,6 +240,25 @@ Connection: close\r
 CERT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "certs")
 CERT_FILE = os.path.join(CERT_DIR, "server.crt")
 KEY_FILE = os.path.join(CERT_DIR, "server.key")
+
+
+_ssl_ctx_cache: ssl.SSLContext | None = None
+_ssl_ctx_lock = threading.Lock()
+
+
+def _get_ssl_context() -> ssl.SSLContext:
+    """Return a cached SSLContext for honeypot TLS services."""
+    global _ssl_ctx_cache
+    if _ssl_ctx_cache is not None:
+        return _ssl_ctx_cache
+    with _ssl_ctx_lock:
+        if _ssl_ctx_cache is not None:
+            return _ssl_ctx_cache
+        _ensure_self_signed_cert()
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(CERT_FILE, KEY_FILE)
+        _ssl_ctx_cache = ctx
+        return ctx
 
 
 def _ensure_self_signed_cert():
@@ -759,9 +815,7 @@ def handle_http(client, addr, service_name, port):
 
 def handle_https(client, addr, service_name, port):
     """Fake HTTPS server wrapping the HTTP credential capture."""
-    _ensure_self_signed_cert()
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ctx.load_cert_chain(CERT_FILE, KEY_FILE)
+    ctx = _get_ssl_context()
     try:
         tls_client = ctx.wrap_socket(client, server_side=True)
         handle_http(tls_client, addr, service_name, port)
@@ -854,9 +908,7 @@ def handle_rdp(client, addr, service_name, port):
         # Step 3: TLS upgrade + protocol-specific handling
         if requested_protocol & 0x02:
             # CredSSP/NLA: upgrade to TLS then perform NTLMSSP exchange
-            _ensure_self_signed_cert()
-            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            ctx.load_cert_chain(CERT_FILE, KEY_FILE)
+            ctx = _get_ssl_context()
             try:
                 tls_client = ctx.wrap_socket(client, server_side=True)
                 _rdp_credssp_exchange(tls_client, addr, service_name, port, username)
@@ -867,9 +919,7 @@ def handle_rdp(client, addr, service_name, port):
                                details=f"RDP TLS handshake failed: {e}")
         elif requested_protocol & 0x01:
             # TLS only (no CredSSP)
-            _ensure_self_signed_cert()
-            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            ctx.load_cert_chain(CERT_FILE, KEY_FILE)
+            ctx = _get_ssl_context()
             try:
                 tls_client = ctx.wrap_socket(client, server_side=True)
                 try:

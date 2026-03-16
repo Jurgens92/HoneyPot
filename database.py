@@ -98,26 +98,32 @@ def log_connection(source_ip, source_port, service, dest_port, details=None,
 def _check_auto_blacklist(ip):
     """Auto-blacklist an IP if it exceeds the threshold."""
     db = get_db()
-    # Skip if already in any list
-    row = db.execute(
-        "SELECT id FROM ip_list WHERE ip_address = ?", (ip,)
-    ).fetchone()
-    if row:
-        return
 
+    # Single query: count recent connections only if IP is not already listed
     threshold = int(get_setting("auto_blacklist_threshold", "10"))
     window = int(get_setting("auto_blacklist_window_minutes", "5"))
 
-    count = db.execute(
-        """SELECT COUNT(*) as cnt FROM connection_logs
-           WHERE source_ip = ?
-           AND timestamp >= datetime('now', ?)""",
-        (ip, f"-{window} minutes"),
-    ).fetchone()["cnt"]
+    row = db.execute(
+        """SELECT
+             (SELECT COUNT(*) FROM ip_list WHERE ip_address = ?) as listed,
+             (SELECT COUNT(*) FROM connection_logs
+              WHERE source_ip = ?
+              AND timestamp >= datetime('now', ?)) as cnt""",
+        (ip, ip, f"-{window} minutes"),
+    ).fetchone()
 
-    if count >= threshold:
-        add_ip(ip, "blacklist", reason=f"Auto-blacklisted: {count} attempts in {window}min",
+    if row["listed"] > 0:
+        return
+
+    if row["cnt"] >= threshold:
+        add_ip(ip, "blacklist", reason=f"Auto-blacklisted: {row['cnt']} attempts in {window}min",
                auto_added=True)
+        # Update in-memory blacklist cache immediately
+        try:
+            from honeypot_services import _add_to_blacklist_cache
+            _add_to_blacklist_cache(ip)
+        except ImportError:
+            pass
 
 
 def add_ip(ip, list_type, reason=None, auto_added=False):
@@ -252,15 +258,34 @@ def get_ip_services(ip):
 
 def get_ips_with_services(list_type):
     """Get IPs with their associated service/port breakdown."""
+    db = get_db()
     ips = get_ips(list_type)
+
+    if not ips:
+        return []
+
+    # Batch-fetch service breakdowns for all IPs in one query
+    ip_addresses = [dict(r)["ip_address"] for r in ips]
+    placeholders = ",".join("?" * len(ip_addresses))
+    svc_rows = db.execute(
+        f"""SELECT source_ip, service, dest_port, COUNT(*) as cnt
+            FROM connection_logs WHERE source_ip IN ({placeholders})
+            GROUP BY source_ip, service, dest_port ORDER BY cnt DESC""",
+        ip_addresses,
+    ).fetchall()
+
+    # Group services by IP
+    svc_map: dict[str, list] = {}
+    for row in svc_rows:
+        ip = row["source_ip"]
+        svc_map.setdefault(ip, []).append(
+            {"service": row["service"], "port": row["dest_port"], "count": row["cnt"]}
+        )
+
     result = []
     for ip_row in ips:
         ip_dict = dict(ip_row)
-        services = get_ip_services(ip_dict["ip_address"])
-        ip_dict["services"] = [
-            {"service": s["service"], "port": s["dest_port"], "count": s["cnt"]}
-            for s in services
-        ]
+        ip_dict["services"] = svc_map.get(ip_dict["ip_address"], [])
         result.append(ip_dict)
     return result
 
