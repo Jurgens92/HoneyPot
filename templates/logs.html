@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Connection Logs - HoneyPot{% endblock %}
+{% block content %}
+<h2>Connection Logs</h2>
+
+<form method="GET" action="{{ url_for('logs') }}">
+    <div class="filter-bar">
+        <select name="service">
+            <option value="">All Services</option>
+            {% for s in services %}
+            <option value="{{ s }}" {% if current_service == s %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+        </select>
+        <input type="text" name="ip" placeholder="Filter by IP..." value="{{ current_ip or '' }}">
+        <button type="submit" class="btn btn-blue">Filter</button>
+        <a href="{{ url_for('logs') }}" class="btn btn-red" style="text-decoration:none;">Clear</a>
+    </div>
+</form>
+
+<table>
+    <thead>
+        <tr>
+            <th>Time</th>
+            <th>Source IP</th>
+            <th>Port</th>
+            <th>Service</th>
+            <th>Dest Port</th>
+            <th>Username</th>
+            <th>Password</th>
+            <th>Details</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for log in logs %}
+        <tr>
+            <td class="mono">{{ log.timestamp[:19] }}</td>
+            <td class="mono">{{ log.source_ip }}</td>
+            <td>{{ log.source_port }}</td>
+            <td>{{ log.service }}</td>
+            <td>{{ log.dest_port }}</td>
+            <td class="mono">{{ log.username or '' }}</td>
+            <td class="mono">{{ log.password or '' }}</td>
+            <td class="truncate" title="{{ log.details }}">{{ log.details or '' }}</td>
+            <td>
+                <form method="POST" action="{{ url_for('add_ip') }}" style="display:inline;">
+                    <input type="hidden" name="ip_address" value="{{ log.source_ip }}">
+                    <input type="hidden" name="list_type" value="blacklist">
+                    <input type="hidden" name="reason" value="Added from logs">
+                    <button type="submit" class="btn btn-red" title="Blacklist">BL</button>
+                </form>
+                <form method="POST" action="{{ url_for('add_ip') }}" style="display:inline;">
+                    <input type="hidden" name="ip_address" value="{{ log.source_ip }}">
+                    <input type="hidden" name="list_type" value="whitelist">
+                    <input type="hidden" name="reason" value="Added from logs">
+                    <button type="submit" class="btn btn-green" title="Whitelist">WL</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+        {% if not logs %}
+        <tr><td colspan="9" style="color:#666;">No logs match your filters.</td></tr>
+        {% endif %}
+    </tbody>
+</table>
+{% endblock %}

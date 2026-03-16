@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - HoneyPot{% endblock %}
+{% block content %}
+<h2>Dashboard</h2>
+
+<div class="cards">
+    <div class="card">
+        <div class="label">Total Connections</div>
+        <div class="value">{{ stats.total_connections }}</div>
+    </div>
+    <div class="card">
+        <div class="label">Unique IPs</div>
+        <div class="value">{{ stats.unique_ips }}</div>
+    </div>
+    <div class="card">
+        <div class="label">Blacklisted</div>
+        <div class="value" style="color: #e94560;">{{ stats.blacklisted }}</div>
+    </div>
+    <div class="card">
+        <div class="label">Whitelisted</div>
+        <div class="value" style="color: #2e7d32;">{{ stats.whitelisted }}</div>
+    </div>
+</div>
+
+<!-- Connections by service -->
+<h2>Connections by Service</h2>
+<table>
+    <thead>
+        <tr><th>Service</th><th>Connections</th><th></th></tr>
+    </thead>
+    <tbody>
+        {% for row in stats.by_service %}
+        <tr>
+            <td>{{ row.service }}</td>
+            <td>{{ row.cnt }}</td>
+            <td><a href="{{ url_for('logs', service=row.service) }}">View logs</a></td>
+        </tr>
+        {% endfor %}
+        {% if not stats.by_service %}
+        <tr><td colspan="3" style="color:#666;">No connections recorded yet.</td></tr>
+        {% endif %}
+    </tbody>
+</table>
+
+<!-- Top IPs -->
+<h2>Top Source IPs</h2>
+<table>
+    <thead>
+        <tr><th>IP Address</th><th>Connections</th><th></th></tr>
+    </thead>
+    <tbody>
+        {% for row in stats.top_ips %}
+        <tr>
+            <td class="mono">{{ row.source_ip }}</td>
+            <td>{{ row.cnt }}</td>
+            <td><a href="{{ url_for('logs', ip=row.source_ip) }}">View logs</a></td>
+        </tr>
+        {% endfor %}
+        {% if not stats.top_ips %}
+        <tr><td colspan="3" style="color:#666;">No connections recorded yet.</td></tr>
+        {% endif %}
+    </tbody>
+</table>
+
+<!-- Recent activity -->
+<h2>Recent Activity</h2>
+<table>
+    <thead>
+        <tr><th>Time</th><th>Source IP</th><th>Service</th><th>Port</th><th>Details</th></tr>
+    </thead>
+    <tbody>
+        {% for row in stats.recent %}
+        <tr>
+            <td class="mono">{{ row.timestamp[:19] }}</td>
+            <td class="mono">{{ row.source_ip }}</td>
+            <td>{{ row.service }}</td>
+            <td>{{ row.dest_port }}</td>
+            <td class="truncate" title="{{ row.details }}">{{ row.details or '' }}</td>
+        </tr>
+        {% endfor %}
+        {% if not stats.recent %}
+        <tr><td colspan="5" style="color:#666;">No connections recorded yet.</td></tr>
+        {% endif %}
+    </tbody>
+</table>
+
+<!-- Settings -->
+<h2>Settings</h2>
+<div class="settings-box">
+    <form method="POST" action="{{ url_for('save_settings') }}">
+        <label>Auto-blacklist threshold (connections)</label>
+        <input type="number" name="auto_blacklist_threshold" value="{{ settings.auto_blacklist_threshold }}" min="1">
+
+        <label>Auto-blacklist time window (minutes)</label>
+        <input type="number" name="auto_blacklist_window_minutes" value="{{ settings.auto_blacklist_window_minutes }}" min="1">
+
+        <label>Published list type (list.txt)</label>
+        <select name="published_list_type">
+            <option value="blacklist" {% if settings.published_list_type == 'blacklist' %}selected{% endif %}>Blacklist</option>
+            <option value="whitelist" {% if settings.published_list_type == 'whitelist' %}selected{% endif %}>Whitelist</option>
+        </select>
+
+        <button type="submit" class="btn btn-blue" style="margin-top:8px;">Save Settings</button>
+    </form>
+</div>
+{% endblock %}

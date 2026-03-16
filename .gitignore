@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+honeypot.db
+honeypot.log
+certs/
+*.pem
+.env

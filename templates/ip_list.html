@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}{{ list_type|capitalize }} - HoneyPot{% endblock %}
+{% block content %}
+<h2>{{ list_type|capitalize }}</h2>
+
+<!-- Add IP form -->
+<form method="POST" action="{{ url_for('add_ip') }}">
+    <div class="form-row">
+        <input type="text" name="ip_address" placeholder="IP address (e.g. 192.168.1.100)" required>
+        <input type="hidden" name="list_type" value="{{ list_type }}">
+        <input type="text" name="reason" placeholder="Reason (optional)">
+        <button type="submit" class="btn btn-blue">Add to {{ list_type|capitalize }}</button>
+    </div>
+</form>
+
+<table>
+    <thead>
+        <tr>
+            <th>IP Address</th>
+            <th>Added</th>
+            <th>Reason</th>
+            <th>Source</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for ip in ips %}
+        <tr>
+            <td class="mono">{{ ip.ip_address }}</td>
+            <td class="mono">{{ ip.added_at[:19] }}</td>
+            <td>{{ ip.reason or '' }}</td>
+            <td>
+                {% if ip.auto_added %}
+                <span class="tag tag-auto">Auto</span>
+                {% else %}
+                <span class="tag tag-{{ 'black' if list_type == 'blacklist' else 'white' }}">Manual</span>
+                {% endif %}
+            </td>
+            <td>
+                <form method="POST" action="{{ url_for('remove_ip') }}" style="display:inline;">
+                    <input type="hidden" name="ip_address" value="{{ ip.ip_address }}">
+                    <input type="hidden" name="redirect_to" value="{{ list_type }}">
+                    <button type="submit" class="btn btn-red">Remove</button>
+                </form>
+                {% if list_type == 'blacklist' %}
+                <form method="POST" action="{{ url_for('move_ip') }}" style="display:inline;">
+                    <input type="hidden" name="ip_address" value="{{ ip.ip_address }}">
+                    <input type="hidden" name="new_list_type" value="whitelist">
+                    <button type="submit" class="btn btn-green">Move to Whitelist</button>
+                </form>
+                {% else %}
+                <form method="POST" action="{{ url_for('move_ip') }}" style="display:inline;">
+                    <input type="hidden" name="ip_address" value="{{ ip.ip_address }}">
+                    <input type="hidden" name="new_list_type" value="blacklist">
+                    <button type="submit" class="btn btn-red">Move to Blacklist</button>
+                </form>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+        {% if not ips %}
+        <tr><td colspan="5" style="color:#666;">No IPs in the {{ list_type }} yet.</td></tr>
+        {% endif %}
+    </tbody>
+</table>
+{% endblock %}

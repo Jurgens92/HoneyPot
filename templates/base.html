@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}HoneyPot Manager{% endblock %}</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+               background: #1a1a2e; color: #e0e0e0; min-height: 100vh; }
+        a { color: #4fc3f7; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+
+        .sidebar { position: fixed; left: 0; top: 0; bottom: 0; width: 220px;
+                   background: #16213e; padding: 20px 0; border-right: 1px solid #0f3460; }
+        .sidebar h1 { font-size: 18px; padding: 0 20px 20px; color: #e94560;
+                      border-bottom: 1px solid #0f3460; margin-bottom: 10px; }
+        .sidebar nav a { display: block; padding: 12px 20px; color: #a0a0c0;
+                        font-size: 14px; border-left: 3px solid transparent; }
+        .sidebar nav a:hover, .sidebar nav a.active { background: #0f3460;
+                        color: #fff; text-decoration: none; border-left-color: #e94560; }
+
+        .main { margin-left: 220px; padding: 30px; }
+        .main h2 { margin-bottom: 20px; color: #e94560; font-size: 22px; }
+
+        .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                 gap: 15px; margin-bottom: 25px; }
+        .card { background: #16213e; padding: 20px; border-radius: 8px;
+                border: 1px solid #0f3460; }
+        .card .label { font-size: 12px; color: #888; text-transform: uppercase; margin-bottom: 5px; }
+        .card .value { font-size: 28px; font-weight: bold; color: #4fc3f7; }
+
+        table { width: 100%; border-collapse: collapse; background: #16213e;
+                border-radius: 8px; overflow: hidden; margin-bottom: 20px; }
+        th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid #0f3460;
+                 font-size: 13px; }
+        th { background: #0f3460; color: #ccc; font-weight: 600; text-transform: uppercase;
+             font-size: 11px; letter-spacing: 0.5px; }
+        tr:hover { background: rgba(79, 195, 247, 0.05); }
+
+        .btn { display: inline-block; padding: 6px 14px; border-radius: 4px;
+               border: none; cursor: pointer; font-size: 13px; color: #fff; }
+        .btn-red { background: #e94560; }
+        .btn-red:hover { background: #c73e54; }
+        .btn-blue { background: #0f3460; }
+        .btn-blue:hover { background: #1a4a8a; }
+        .btn-green { background: #2e7d32; }
+        .btn-green:hover { background: #388e3c; }
+
+        .form-row { display: flex; gap: 10px; margin-bottom: 15px; align-items: center; flex-wrap: wrap; }
+        .form-row input, .form-row select { padding: 8px 12px; border-radius: 4px;
+               border: 1px solid #0f3460; background: #1a1a2e; color: #e0e0e0; font-size: 13px; }
+        .form-row input { min-width: 200px; }
+
+        .tag { display: inline-block; padding: 2px 8px; border-radius: 3px;
+               font-size: 11px; font-weight: 600; }
+        .tag-black { background: #e94560; color: #fff; }
+        .tag-white { background: #2e7d32; color: #fff; }
+        .tag-auto { background: #f57c00; color: #fff; }
+
+        .filter-bar { display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; align-items: center; }
+        .filter-bar select, .filter-bar input { padding: 8px 12px; border-radius: 4px;
+               border: 1px solid #0f3460; background: #1a1a2e; color: #e0e0e0; font-size: 13px; }
+
+        .settings-box { background: #16213e; padding: 20px; border-radius: 8px;
+                        border: 1px solid #0f3460; margin-bottom: 20px; max-width: 500px; }
+        .settings-box label { display: block; font-size: 13px; color: #aaa; margin-bottom: 4px; }
+        .settings-box input, .settings-box select { width: 100%; padding: 8px; margin-bottom: 12px;
+               border-radius: 4px; border: 1px solid #0f3460; background: #1a1a2e; color: #e0e0e0; }
+
+        .truncate { max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .mono { font-family: 'Fira Code', 'Consolas', monospace; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <h1>HoneyPot</h1>
+        <nav>
+            <a href="{{ url_for('dashboard') }}" class="{% if request.endpoint == 'dashboard' %}active{% endif %}">Dashboard</a>
+            <a href="{{ url_for('logs') }}" class="{% if request.endpoint == 'logs' %}active{% endif %}">Connection Logs</a>
+            <a href="{{ url_for('blacklist') }}" class="{% if request.endpoint == 'blacklist' %}active{% endif %}">Blacklist</a>
+            <a href="{{ url_for('whitelist') }}" class="{% if request.endpoint == 'whitelist' %}active{% endif %}">Whitelist</a>
+            <a href="/list.txt" target="_blank">Published List</a>
+        </nav>
+    </div>
+    <div class="main">
+        {% block content %}{% endblock %}
+    </div>
+</body>
+</html>
