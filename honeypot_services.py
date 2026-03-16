@@ -445,18 +445,121 @@ def handle_https(client, addr, service_name, port):
 
 
 def handle_rdp(client, addr, service_name, port):
-    """Fake RDP service on port 8443 - logs connection attempts."""
+    """Fake RDP service - handles X.224 negotiation and captures connection data."""
     client.settimeout(15)
     try:
+        # Step 1: Receive X.224 Connection Request
         data = client.recv(4096)
-        hex_data = data.hex()[:200] if data else "empty"
+        if not data or len(data) < 11:
+            log_connection(addr[0], addr[1], service_name, port,
+                           details=f"RDP connection (insufficient data): "
+                                   f"{data.hex()[:100] if data else 'empty'}")
+            return
+
+        # Validate TPKT header (0x03) and X.224 CR PDU type (0xe0)
+        if data[0] != 0x03 or data[5] != 0xe0:
+            log_connection(addr[0], addr[1], service_name, port,
+                           details=f"RDP non-standard data: {data.hex()[:200]}")
+            return
+
+        # Extract cookie/username from "Cookie: mstshash=<user>\r\n"
+        username = None
+        try:
+            decoded = data[11:].decode("ascii", errors="replace")
+            if "mstshash=" in decoded:
+                username = decoded.split("mstshash=")[1].split("\r")[0].strip()
+        except Exception:
+            pass
+
+        # Detect requested security protocol from RDP Negotiation Request
+        # (type=0x01 flags length=0x0008 requestedProtocols)
+        requested_protocol = 0
+        neg_offset = data.find(b"\x01\x00\x08\x00")
+        if neg_offset >= 0 and neg_offset + 8 <= len(data):
+            requested_protocol = int.from_bytes(
+                data[neg_offset + 4:neg_offset + 8], "little")
+
+        details = "RDP Connection Request"
+        if username:
+            details += f" (cookie user: {username})"
+        proto_names = []
+        if requested_protocol & 0x01:
+            proto_names.append("TLS")
+        if requested_protocol & 0x02:
+            proto_names.append("CredSSP/NLA")
+        if requested_protocol & 0x08:
+            proto_names.append("RDSTLS")
+        if proto_names:
+            details += f" protocols=[{','.join(proto_names)}]"
+
         log_connection(addr[0], addr[1], service_name, port,
-                       details=f"RDP data (hex): {hex_data}")
-        # Send a minimal RDP negotiation failure to keep scanners interested
-        client.sendall(b"\x03\x00\x00\x09\x02\xf0\x80\x21\x80")
+                       username=username, details=details)
+
+        # Step 2: Send X.224 Connection Confirm with selected protocol
+        if requested_protocol & 0x01:
+            # Client supports TLS - agree to PROTOCOL_SSL
+            selected = b"\x01\x00\x00\x00"
+        else:
+            # Fallback to standard RDP security
+            selected = b"\x00\x00\x00\x00"
+
+        cc_response = (
+            b"\x03\x00"          # TPKT version 3
+            b"\x00\x13"          # TPKT length = 19
+            b"\x0e"              # X.224 length = 14
+            b"\xd0"              # X.224 CC (Connection Confirm)
+            b"\x00\x00"          # dst-ref
+            b"\x00\x00"          # src-ref
+            b"\x00"              # class options
+            b"\x02"              # TYPE_RDP_NEG_RSP
+            b"\x00"              # flags
+            b"\x08\x00"          # length = 8
+            + selected
+        )
+        client.sendall(cc_response)
+
+        # Step 3: If we negotiated TLS, upgrade the connection
+        if requested_protocol & 0x01:
+            _ensure_self_signed_cert()
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(CERT_FILE, KEY_FILE)
+            try:
+                tls_client = ctx.wrap_socket(client, server_side=True)
+                # Receive CredSSP / NLA data over the TLS channel
+                try:
+                    nla_data = tls_client.recv(4096)
+                    if nla_data:
+                        log_connection(
+                            addr[0], addr[1], service_name, port,
+                            username=username,
+                            details=f"RDP NLA/CredSSP data "
+                                    f"({len(nla_data)} bytes): "
+                                    f"{nla_data.hex()[:200]}")
+                except socket.timeout:
+                    pass
+                tls_client.close()
+                return  # underlying socket closed by tls_client.close()
+            except ssl.SSLError as e:
+                log_connection(addr[0], addr[1], service_name, port,
+                               details=f"RDP TLS handshake failed: {e}")
+        else:
+            # No TLS - try to receive MCS Connect Initial
+            try:
+                mcs_data = client.recv(4096)
+                if mcs_data:
+                    log_connection(
+                        addr[0], addr[1], service_name, port,
+                        details=f"RDP MCS data ({len(mcs_data)} bytes): "
+                                f"{mcs_data.hex()[:200]}")
+            except socket.timeout:
+                pass
+
     except socket.timeout:
         log_connection(addr[0], addr[1], service_name, port,
-                       details="RDP connection (no data)")
+                       details="RDP connection timeout")
+    except (ConnectionResetError, BrokenPipeError, OSError) as e:
+        log_connection(addr[0], addr[1], service_name, port,
+                       details=f"RDP connection error: {e}")
 
 
 def handle_smtp(client, addr, service_name, port):
@@ -565,7 +668,7 @@ SERVICE_DEFINITIONS = [
     (443, "HTTPS", handle_https),
     (22, "SSH", handle_ssh),
     (23, "Telnet", handle_telnet),
-    (8443, "RDP", handle_rdp),
+    (3389, "RDP", handle_rdp),
     (25, "SMTP", handle_smtp),
     (1433, "MSSQL", handle_mssql),
     (1434, "MSSQL-Browser", handle_mssql),

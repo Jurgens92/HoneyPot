@@ -2,7 +2,7 @@
 """
 HoneyPot - A Flask-based honeypot application with fake services.
 
-Fake services listen on: 80, 443, 22, 23, 8443, 25, 1433, 1434, 3306
+Fake services listen on: 80, 443, 22, 23, 3389, 25, 1433, 1434, 3306
 Management backend runs on: 8080
 
 Run as root (required for binding to privileged ports < 1024):
